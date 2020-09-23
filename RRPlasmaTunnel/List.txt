@@ -1,0 +1,1263 @@
+     1                                  ;Tunnel.asm  by Robert Rayment  June 2002
+     2                                  
+     3                                  ;VB
+     4                                  
+     5                                  ;'PlasmaTunnel MCode Structure
+     6                                  ;Public Type PStruc
+     7                                  ;   PtrIndexArray As Long      ' byte array (1-SqSize,1-SqSize) values 0-255
+     8                                  ;   PtrColArray As Long        ' byte array (1-SqSize,1-SqSize) values 0-255
+     9                                  ;   PtrLineStore As Long       ' byte array (1-SqSize) values 0-255
+    10                                  ;   PtrCoordsX As Long         ' integer array (1-SqSize) values 1-SqSize
+    11                                  ;   PtrCoordsY As Long         ' integer array (1-SqSize) values 1-SqSize
+    12                                  ;   RandSeed As Long           ' (0-.99999) * 255
+    13                                  ;   PlasmaGraininess As Long   ' 0 - 16
+    14                                  ;   PlasmaScale As Long        ' 4 - 64
+    15                                  ;   Twirl As Long              ' 0 No Twirl, 1 Do Twirl
+    16                                  ;   TwirlCount As Long         ' 0-500
+    17                                  ;   Speed As Long              ' 1-4    
+    18                                  
+    19                                  ;End Type
+    20                                  ;Public PlasmaStruc As PStruc
+    21                                  ;' Fixed values
+    22                                  ;' sizex As Long           ' SqSize
+    23                                  ;' sizey As Long           ' SqSize
+    24                                  ;' PaletteMaxIndex As Long ' 255
+    25                                  ;Public TunnelMC() As Byte  ' Array to hold machine code
+    26                                  ;Public Const Plasma0 = 0
+    27                                  ;Public Const DoSmoothing1 = 1
+    28                                  ;Public Const Transform2 = 2
+    29                                  ;Public Const ScrollDown3 = 3 & TransformLUT4
+    30                                  ;Public Const TransformLUT4 = 4
+    31                                  
+    32                                  ;'res = CallWindowProc(ptrMC, ptrStruc, OpCode&, 0&, 0&)
+    33                                  ;                             8         12       16  20
+    34                                  
+    35                                  %macro movab 2      ;name & num of parameters
+    36                                    push dword %2     ;2nd param
+    37                                    pop dword %1      ;1st param
+    38                                  %endmacro           ;use  movab %1,%2
+    39                                  ;Allows eg  movab bmW,[ebx+4]
+    40                                  
+    41                                  %define PtrIndexArray       [ebp-4]
+    42                                  %define PtrColArray         [ebp-8] 
+    43                                  %define PtrLineStore        [ebp-12]
+    44                                  %define PtrCoordsX          [ebp-16]
+    45                                  %define PtrCoordsY          [ebp-20]
+    46                                  %define RandSeed            [ebp-24]
+    47                                  %define Noise               [ebp-28]        ; PlasmaGraininess
+    48                                  %define Stepsize            [ebp-32]        ; PlasmaScale
+    49                                  %define StartStepsize       [ebp-36]        ; PlasmaScale
+    50                                  
+    51                                  %define zdx         [ebp-40]
+    52                                  %define zdy         [ebp-44]
+    53                                  %define ixs         [ebp-48]
+    54                                  %define iys         [ebp-52]
+    55                                  %define kx          [ebp-56]
+    56                                  %define ky          [ebp-60]
+    57                                  %define n255        [ebp-64]
+    58                                  
+    59                                  %define lo32        [ebp-68]
+    60                                  %define hi32        [ebp-72]
+    61                                  
+    62                                  %define RndNoise    [ebp-76]
+    63                                  %Define Col         [ebp-80]
+    64                                  %Define zmul        [ebp-84]
+    65                                  %define index       [ebp-88]
+    66                                  %Define sdiv        [ebp-92]
+    67                                  %Define iyup        [ebp-96]
+    68                                  %Define ixup        [ebp-100]
+    69                                  %define smin        [ebp-104]
+    70                                  %define smax        [ebp-108]
+    71                                  
+    72                                  %define ix          [ebp-112]
+    73                                  %define iy          [ebp-116]
+    74                                  
+    75                                  %define zAngle      [ebp-120]   ; real
+    76                                  %define Radius      [ebp-124]   ; int
+    77                                  %define n10         [ebp-128]
+    78                                  
+    79                                  %define Mask4       [ebp-132]
+    80                                  %define SUMMER      [ebp-136]
+    81                                  
+    82                                  %define Twirl       [ebp-140]
+    83                                  %define TwirlCount  [ebp-144]
+    84                                  %define Speed       [ebp-148]
+    85                                  
+    86                                  %define SqSize      [ebp-152]
+    87                                  
+    88                                  [bits 32]
+    89                                  
+    90 00000000 55                          push ebp
+    91 00000001 89E5                        mov ebp,esp
+    92 00000003 81EC98000000                sub esp,152
+    93 00000009 57                          push edi
+    94 0000000A 56                          push esi
+    95 0000000B 53                          push ebx
+    96                                      
+    97 0000000C B800010000                  mov eax,256
+    98 00000011 898568FFFFFF                mov SqSize,eax
+    99                                      
+   100 00000017 B8FF000000                  mov eax,255
+   101 0000001C 8945C0                      mov n255,eax
+   102                                  
+   103 0000001F 8B450C                      mov eax,[ebp+12]        ; Opcode&
+   104                                      
+   105 00000022 3D00000000                  cmp eax,0
+   106 00000027 750A                        jne T1
+   107 00000029 E873000000                  Call Plasma
+   108 0000002E E965000000                  jmp GETOUT
+   109                                  T1:
+   110 00000033 3D01000000                  cmp eax,1
+   111 00000038 7514                        jne T2
+   112 0000003A E862000000                  Call Plasma
+   113 0000003F E84C070000                  Call DoSmoothing
+   114 00000044 E847070000                  Call DoSmoothing
+   115 00000049 E94A000000                  jmp GETOUT
+   116                                  T2:
+   117 0000004E 3D02000000                  cmp eax,2
+   118 00000053 750A                        jne T3
+   119 00000055 E82F030000                  Call Transform
+   120 0000005A E939000000                  jmp GETOUT
+   121                                  T3:
+   122 0000005F 3D03000000                  cmp eax,3
+   123 00000064 7526                        jne T4
+   124 00000066 8B5D08                      mov ebx,[ebp+8]
+   125                                      movab Speed,        [ebx+40]
+   126 00000069 FF7328              <1>   push dword %2
+   127 0000006C 8F856CFFFFFF        <1>   pop dword %1
+   128 00000072 8B8D6CFFFFFF                mov ecx,Speed
+   129                                  TSpeed:
+   130                                  
+   131 00000078 51                          push ecx
+   132 00000079 E87A040000                  Call ScrollDown
+   133 0000007E 59                          pop ecx
+   134 0000007F 49                          dec ecx
+   135 00000080 75F6                        jnz TSpeed
+   136                                  
+   137 00000082 E8F0050000                  Call TransformLUT
+   138 00000087 E90C000000                  jmp GETOUT
+   139                                  T4:
+   140 0000008C 3D04000000                  cmp eax,4
+   141 00000091 7505                        jne GETOUT
+   142 00000093 E8DF050000                  Call TransformLUT
+   143                                  
+   144                                  GETOUT:
+   145                                  
+   146 00000098 5B                          pop ebx
+   147 00000099 5E                          pop esi
+   148 0000009A 5F                          pop edi
+   149 0000009B 89EC                        mov esp,ebp
+   150 0000009D 5D                          pop ebp
+   151 0000009E C21000                      ret 16
+   152                                  ;###################################################
+   153                                  
+   154                                  Plasma:
+   155                                  
+   156                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   157                                      ; Get structure 
+   158 000000A1 8B5D08                      mov ebx,[ebp+8]
+   159                                  
+   160                                      movab PtrIndexArray,    [ebx]
+   161 000000A4 FF33                <1>   push dword %2
+   162 000000A6 8F45FC              <1>   pop dword %1
+   163                                      movab PtrColArray,      [ebx+4]
+   164 000000A9 FF7304              <1>   push dword %2
+   165 000000AC 8F45F8              <1>   pop dword %1
+   166                                      movab PtrLineStore,     [ebx+8]
+   167 000000AF FF7308              <1>   push dword %2
+   168 000000B2 8F45F4              <1>   pop dword %1
+   169                                      movab PtrCoordsX,       [ebx+12]
+   170 000000B5 FF730C              <1>   push dword %2
+   171 000000B8 8F45F0              <1>   pop dword %1
+   172                                      movab PtrCoordsY,       [ebx+16]
+   173 000000BB FF7310              <1>   push dword %2
+   174 000000BE 8F45EC              <1>   pop dword %1
+   175                                      movab RandSeed,         [ebx+20]
+   176 000000C1 FF7314              <1>   push dword %2
+   177 000000C4 8F45E8              <1>   pop dword %1
+   178                                      movab Noise,            [ebx+24]    ; PlasmaGraininess
+   179 000000C7 FF7318              <1>   push dword %2
+   180 000000CA 8F45E4              <1>   pop dword %1
+   181                                      movab Stepsize,         [ebx+28]    ; PlasmaScale
+   182 000000CD FF731C              <1>   push dword %2
+   183 000000D0 8F45E0              <1>   pop dword %1
+   184                                  
+   185 000000D3 8B45E0                      mov eax,Stepsize
+   186 000000D6 8945DC                      mov StartStepsize,eax
+   187                                  
+   188 000000D9 31C0                        xor eax,eax
+   189 000000DB 8945B4                      mov RndNoise,eax
+   190                                  
+   191                                  DO:
+   192 000000DE B901000000                  mov ecx,1
+   193                                  FIY:
+   194 000000E3 894D8C                      mov iy,ecx
+   195 000000E6 51                          push ecx
+   196                                  
+   197 000000E7 B901000000                  mov ecx,1
+   198                                  FIX:
+   199 000000EC 894D90                      mov ix,ecx
+   200 000000EF 51                          push ecx
+   201                                      
+   202                                      ;-----------
+   203 000000F0 8B45E4                      mov eax,Noise
+   204 000000F3 3D00000000                  cmp eax,0
+   205 000000F8 742A                        je NoiseDone        ; RndNoise = 0
+   206                                  
+   207 000000FA E816080000                  Call Random         ; eax = Rnd * 255 = 0-255
+   208                                  
+   209 000000FF D1E0                        shl eax,1
+   210 00000101 8B5DE4                      mov ebx,Noise
+   211 00000104 F7E3                        mul ebx             ; (Rnd*255)*2*Noise
+   212 00000106 8945B4                      mov RndNoise,eax
+   213                                      
+   214 00000109 DB45B4                      fild dword RndNoise
+   215 0000010C DB45C0                      fild dword n255      ; 255,RndNoise
+   216 0000010F DEF9                        fdivp st1            ; RndNoise/255
+   217 00000111 DB5DB4                      fistp dword RndNoise ; Rnd*2*Noise
+   218                                      
+   219 00000114 8B45B4                      mov eax,RndNoise
+   220 00000117 8B5DE4                      mov ebx,Noise
+   221 0000011A 29D8                        sub eax,ebx          ; Rnd*2*Noise - Noise
+   222 0000011C 8B5DE0                      mov ebx,Stepsize
+   223 0000011F F7E3                        mul ebx              ; (Rnd*2*Noise)*Stepsize
+   224 00000121 8945B4                      mov RndNoise,eax
+   225                                  
+   226                                  NoiseDone:
+   227 00000124 8B458C                      mov eax,iy
+   228 00000127 0345E0                      add eax,Stepsize
+   229 0000012A 3B8568FFFFFF                cmp eax,SqSize          ; iy+Stepsize <= sizey
+   230 00000130 7223                        jb Tix
+   231                                          ; Col=IndexArray(ix,1)+RndNoise     
+   232 00000132 8B4590                          mov eax,ix
+   233 00000135 8945C8                          mov kx,eax
+   234 00000138 B801000000                      mov eax,1
+   235 0000013D 8945C4                          mov ky,eax
+   236 00000140 E8EC070000                      Call near IndexArrayAddr    ; edi->addr
+   237 00000145 8A1F                            mov BL,[edi]
+   238 00000147 0FBEC3                          movsx eax,BL
+   239 0000014A 0345B4                          add eax,RndNoise
+   240 0000014D 8945B0                          mov Col,eax
+   241 00000150 E9BA000000                      jmp DoBox
+   242                                  Tix:
+   243 00000155 8B4590                      mov eax,ix
+   244 00000158 0345E0                      add eax,Stepsize
+   245 0000015B 3B8568FFFFFF                cmp eax,SqSize
+   246 00000161 7223                        jb Tstart
+   247                                          ; Col=IndexArray(1,iy)+RndNoise     
+   248 00000163 B801000000                      mov eax,1
+   249 00000168 8945C8                          mov kx,eax
+   250 0000016B 8B458C                          mov eax,iy
+   251 0000016E 8945C4                          mov ky,eax
+   252 00000171 E8BB070000                      Call near IndexArrayAddr    ; edi->addr
+   253 00000176 8A1F                            mov BL,[edi]
+   254 00000178 0FBEC3                          movsx eax,BL
+   255 0000017B 0345B4                          add eax,RndNoise
+   256 0000017E 8945B0                          mov Col,eax
+   257 00000181 E989000000                      jmp DoBox
+   258                                  Tstart:
+   259 00000186 8B45E0                      mov eax,Stepsize
+   260 00000189 3B45DC                      cmp eax,StartStepsize
+   261 0000018C 752E                        jne FourPoint
+   262                                      ; Col = (Rnd*255)*(2*255)/255-255
+   263                                  
+   264 0000018E E882070000                  Call Random         ; eax = Rnd * 255 = 0-255
+   265                                  
+   266 00000193 D1E0                        shl eax,1           ; 2*(Rnd*255)
+   267 00000195 BBFF000000                  mov ebx,255
+   268 0000019A F7E3                        mul ebx             ; (Rnd*255)*2*255
+   269 0000019C 8945A8                      mov index,eax
+   270                                      
+   271 0000019F DB45A8                      fild dword index
+   272 000001A2 DB45C0                      fild dword n255     ; 255,index
+   273 000001A5 DEF9                        fdivp st1           ; index/255
+   274 000001A7 DB5DA8                      fistp dword index   ; Rnd*2*255
+   275                                      
+   276 000001AA 8B45A8                      mov eax,index
+   277 000001AD BBFF000000                  mov ebx,255
+   278 000001B2 29D8                        sub eax,ebx         ; (Rnd*2*255)- 255
+   279 000001B4 8945B0                      mov Col,eax
+   280 000001B7 E953000000                  jmp DoBox
+   281                                  
+   282                                  FourPoint:
+   283                                  
+   284                                      ; Col=IndexArray(ix,iy)
+   285 000001BC 8B4590                          mov eax,ix
+   286 000001BF 8945C8                          mov kx,eax
+   287 000001C2 8B458C                          mov eax,iy
+   288 000001C5 8945C4                          mov ky,eax
+   289 000001C8 E864070000                      Call near IndexArrayAddr    ; edi->addr (ebx & edx used)
+   290 000001CD 8A1F                            mov BL,[edi]
+   291 000001CF 0FBEC3                          movsx eax,BL
+   292 000001D2 8945B0                          mov Col,eax
+   293                                          
+   294 000001D5 8B55E0                          mov edx,Stepsize
+   295 000001D8 D1E2                            shl edx,1       ; edx=2*Stepsize
+   296                                  
+   297                                      ; Col = Col + IndexArray(ix+Stepsize,iy)
+   298 000001DA 01D7                            add edi,edx 
+   299 000001DC 8A1F                            mov BL,[edi]
+   300 000001DE 0FBFC3                          movsx eax,bx
+   301 000001E1 0145B0                          add Col,eax
+   302                                  
+   303                                      ; Col = Col + IndexArray(ix+Stepsize,iy+Stepsize)
+   304 000001E4 52                              push edx
+   305 000001E5 89D0                            mov eax,edx
+   306 000001E7 BBFF000000                      mov ebx,255
+   307 000001EC F7E3                            mul ebx         ; eax = 2*Stepsize*255  (edx changed)
+   308 000001EE 01C7                            add edi,eax
+   309 000001F0 8A1F                            mov BL,[edi]
+   310 000001F2 0FBEC3                          movsx eax,BL
+   311 000001F5 0145B0                          add Col,eax
+   312                                      
+   313                                      ; Col = Col + IndexArray(ix,iy+Stepsize)
+   314 000001F8 5A                              pop edx
+   315 000001F9 29D7                            sub edi,edx
+   316 000001FB 8A1F                            mov BL,[edi]
+   317 000001FD 0FBEC3                          movsx eax,BL
+   318 00000200 0145B0                          add Col,eax
+   319                                  
+   320                                      ; Col = Col\4 + RndNoise
+   321 00000203 8B45B0                          mov eax,Col
+   322 00000206 C1E802                          shr eax,2
+   323                                          
+   324 00000209 0345B4                          add eax,RndNoise
+   325 0000020C 8945B0                          mov Col,eax
+   326                                  DoBox:
+   327 0000020F 8B45B0                      mov eax,Col
+   328 00000212 3D00000000                  cmp eax,0
+   329 00000217 7F0A                        jg tgr255
+   330 00000219 B801000000                  mov eax,1
+   331 0000021E E90C000000                  jmp fillCol
+   332                                  tgr255:    
+   333 00000223 3DFF000000                  cmp eax,255
+   334 00000228 7E05                        jle fillCol
+   335 0000022A B8FF000000                  mov eax,255
+   336                                  fillCol:    
+   337 0000022F 8945B0                      mov Col,eax
+   338                                      
+   339 00000232 8B45E0                      mov eax,Stepsize
+   340 00000235 3D01000000                  cmp eax,1
+   341 0000023A 764B                        jbe SinglePt
+   342                                          ; For ky = iy to iy + Stepsize
+   343                                          ;   If ky <= SqSize Then
+   344                                          ;       For kx = ix to ix + Stepsize
+   345                                          ;           If kx <= SqSize then
+   346                                          ;               IndexArray(kx,ky) = Col
+   347                                          ;           End if
+   348                                          ;       Next kx
+   349                                          ;   End If
+   350                                          ; Next ky
+   351                                  
+   352 0000023C 8B458C                          mov eax,iy
+   353 0000023F 0345E0                          add eax,Stepsize
+   354 00000242 8945A0                          mov iyup,eax
+   355                                  
+   356 00000245 8B4590                          mov eax,ix
+   357 00000248 0345E0                          add eax,Stepsize
+   358 0000024B 89459C                          mov ixup,eax
+   359                                  
+   360 0000024E 8B4D8C                          mov ecx,iy
+   361                                      Fy:
+   362 00000251 894DC4                          mov ky,ecx
+   363 00000254 51                              push ecx
+   364                                  
+   365 00000255 3B8D68FFFFFF                    cmp ecx,SqSize         ; If ky <= SqSize Then
+   366 0000025B 771E                            ja Ny
+   367 0000025D 8B4D90                              mov ecx,ix
+   368                                          Fx:
+   369 00000260 3B8D68FFFFFF                        cmp ecx,SqSize     ; If kx <= SqSize then
+   370 00000266 7713                                ja Ny
+   371                                  
+   372 00000268 894DC8                              mov kx,ecx
+   373 0000026B E8C1060000                          Call near IndexArrayAddr    ; edi->addr
+   374 00000270 8B45B0                              mov eax,Col
+   375 00000273 8807                                mov [edi],AL
+   376 00000275 41                                  inc ecx
+   377 00000276 3B4D9C                              cmp ecx,ixup    ; ecx-ixup
+   378 00000279 76E5                            jbe Fx
+   379                                      Ny:
+   380 0000027B 59                              pop ecx
+   381 0000027C 41                              inc ecx
+   382 0000027D 3B4DA0                          cmp ecx,iyup        ; ecx-iyup
+   383 00000280 76CF                        jbe Fy
+   384                                  
+   385 00000282 E916000000                  jmp NIX
+   386                                  
+   387                                  SinglePt:
+   388                                      ; IndexArray(ix,iy) = Col
+   389 00000287 8B4590                      mov eax,ix
+   390 0000028A 8945C8                      mov kx,eax
+   391 0000028D 8B458C                      mov eax,iy
+   392 00000290 8945C4                      mov ky,eax
+   393 00000293 E899060000                  Call near IndexArrayAddr    ; edi->addr
+   394 00000298 8B45B0                      mov eax,Col
+   395 0000029B 8807                        mov [edi],AL  ;ax
+   396                                  
+   397                                      ;-----------
+   398                                  NIX:
+   399 0000029D 59                          pop ecx
+   400 0000029E 034DE0                      add ecx,Stepsize
+   401 000002A1 3B8D68FFFFFF                cmp ecx,SqSize             ; ix <= sizex
+   402 000002A7 0F863FFEFFFF                jbe near FIX
+   403                                  NIY:
+   404 000002AD 59                          pop ecx
+   405 000002AE 034DE0                      add ecx,Stepsize
+   406 000002B1 3B8D68FFFFFF                cmp ecx,SqSize             ; iy <= sizey
+   407 000002B7 0F8626FEFFFF                jbe near FIY
+   408                                  
+   409 000002BD 8B45E0                      mov eax,Stepsize
+   410 000002C0 D1E8                        shr eax,1               ; Stepsize=Stepsize\2
+   411 000002C2 8945E0                      mov Stepsize,eax
+   412 000002C5 3D01000000                  cmp eax,1
+   413 000002CA 0F870EFEFFFF                ja near DO
+   414                                  ;-----------------
+   415                                  
+   416                                      ; Get Col max/min
+   417                                  
+   418 000002D0 B810270000                  mov eax,10000
+   419 000002D5 894598                      mov smin,eax
+   420 000002D8 F7D8                        neg eax
+   421 000002DA 894594                      mov smax,eax
+   422                                  
+   423 000002DD 8B8D68FFFFFF                mov ecx,SqSize             ; iy=sizey
+   424                                  SAy:
+   425 000002E3 51                          push ecx
+   426 000002E4 894DC4                      mov ky,ecx
+   427                                      
+   428 000002E7 8B8D68FFFFFF                mov ecx,SqSize             ; ix=sizex
+   429                                  SAx:
+   430 000002ED 894DC8                      mov kx,ecx
+   431 000002F0 E83C060000                  Call near IndexArrayAddr    ; edi->addr
+   432 000002F5 8A1F                        mov BL,[edi]
+   433 000002F7 0FBEC3                      movsx eax,BL
+   434 000002FA 3B4598                      cmp eax,smin
+   435 000002FD 7D03                        jge Tsmax
+   436 000002FF 894598                      mov smin,eax
+   437                                  Tsmax:
+   438 00000302 3B4594                      cmp eax,smax
+   439 00000305 7E03                        jle Nax 
+   440 00000307 894594                      mov smax,eax    
+   441                                  Nax:
+   442 0000030A 49                          dec ecx
+   443 0000030B 75E0                        jnz SAx
+   444                                      
+   445 0000030D 59                          pop ecx
+   446 0000030E 49                          dec ecx
+   447 0000030F 75D2                        jnz SAy
+   448                                  
+   449                                      ; Calc Stretch color factor zmul
+   450                                  
+   451 00000311 8B4594                      mov eax,smax
+   452 00000314 2B4598                      sub eax,smin
+   453 00000317 3D00000000                  cmp eax,0
+   454 0000031C 7F05                        jg Getzmul
+   455 0000031E B801000000                  mov eax,1
+   456                                  Getzmul:
+   457 00000323 8945A4                      mov sdiv,eax
+   458                                  
+   459 00000326 DB45C0                      fild dword n255  
+   460 00000329 DB45A4                      fild dword sdiv         ; sdiv, 255
+   461 0000032C DEF9                        fdivp st1               ; 255/sdiv
+   462 0000032E D95DAC                      fstp dword zmul         ; Real
+   463                                      ;------------
+   464                                  
+   465                                      ; Fill IndexArray(ix.iy) with new index
+   466 00000331 8B8D68FFFFFF                mov ecx,SqSize             ; sizey=SqSize
+   467                                  CAy:
+   468 00000337 51                          push ecx
+   469 00000338 894DC4                      mov ky,ecx
+   470                                      
+   471 0000033B 8B8D68FFFFFF                mov ecx,SqSize             ; sizex=SqSize
+   472                                  CAx:
+   473 00000341 894DC8                      mov kx,ecx
+   474 00000344 E8E8050000                  Call near IndexArrayAddr    ; edi->addr
+   475 00000349 8A1F                        mov BL,[edi]
+   476 0000034B 0FBEC3                      movsx eax,BL
+   477 0000034E 8B5D98                      mov ebx,smin
+   478 00000351 29D8                        sub eax,ebx
+   479 00000353 8945A8                      mov index,eax           ; (Col-smin)
+   480                                  
+   481 00000356 DB45A8                      fild dword index
+   482 00000359 D945AC                      fld dword zmul
+   483 0000035C DEC9                        fmulp st1
+   484 0000035E DB5DA8                      fistp dword index       ; Index = (Col-smin)*zmul (0 - 511)
+   485                                      ;............
+   486 00000361 8B45A8                      mov eax,index
+   487                                  
+   488                                      ; Check Index in range
+   489 00000364 3D00000000                  cmp eax,0
+   490 00000369 7D05                        jge L1
+   491 0000036B B800000000                  mov eax,0
+   492                                  L1:
+   493 00000370 3DFF000000                  cmp eax,255
+   494 00000375 7E05                        jle L2
+   495 00000377 B8FF000000                  mov eax,255
+   496                                  L2:
+   497 0000037C 8945A8                      mov index,eax
+   498                                  
+   499 0000037F 8807                        mov [edi],AL           ; Put in new Index value
+   500                                  ;...................................    
+   501                                  
+   502 00000381 49                          dec ecx
+   503 00000382 75BD                        jnz CAx
+   504                                      
+   505 00000384 59                          pop ecx
+   506 00000385 49                          dec ecx
+   507 00000386 75AF                        jnz CAy
+   508                                  
+   509 00000388 C3                      RET
+   510                                  ;---------------------------------------------------
+   511                                  ; %define zAngle        [ebp-120]   ; real
+   512                                  ; %define Radius        [ebp-124]   ; int
+   513                                  ; %define n10           [ebp-128]
+   514                                  
+   515                                  Transform:
+   516                                  
+   517                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   518                                      ; Get structure 
+   519 00000389 8B5D08                      mov ebx,[ebp+8]
+   520                                  
+   521                                      movab PtrIndexArray,    [ebx]
+   522 0000038C FF33                <1>   push dword %2
+   523 0000038E 8F45FC              <1>   pop dword %1
+   524                                      movab PtrColArray,      [ebx+4]
+   525 00000391 FF7304              <1>   push dword %2
+   526 00000394 8F45F8              <1>   pop dword %1
+   527                                      movab PtrLineStore,     [ebx+8]
+   528 00000397 FF7308              <1>   push dword %2
+   529 0000039A 8F45F4              <1>   pop dword %1
+   530                                      movab PtrCoordsX,       [ebx+12]
+   531 0000039D FF730C              <1>   push dword %2
+   532 000003A0 8F45F0              <1>   pop dword %1
+   533                                      movab PtrCoordsY,       [ebx+16]
+   534 000003A3 FF7310              <1>   push dword %2
+   535 000003A6 8F45EC              <1>   pop dword %1
+   536                                      movab RandSeed,         [ebx+20]
+   537 000003A9 FF7314              <1>   push dword %2
+   538 000003AC 8F45E8              <1>   pop dword %1
+   539                                      movab Noise,            [ebx+24]    ; PlasmaGraininess
+   540 000003AF FF7318              <1>   push dword %2
+   541 000003B2 8F45E4              <1>   pop dword %1
+   542                                      movab Stepsize,         [ebx+28]    ; PlasmaScale
+   543 000003B5 FF731C              <1>   push dword %2
+   544 000003B8 8F45E0              <1>   pop dword %1
+   545                                  
+   546 000003BB B80A000000                  mov eax,10
+   547 000003C0 894580                      mov n10,eax
+   548                                  
+   549                                      ; Make sure CoordsX & CoordsY have at least 1 in them
+   550 000003C3 8B8D68FFFFFF                mov ecx,SqSize
+   551                                  CooY:
+   552 000003C9 51                          push ecx
+   553 000003CA 894DC4                      mov ky,ecx
+   554                                  
+   555 000003CD 8B8D68FFFFFF                mov ecx,SqSize
+   556                                  CooX:
+   557 000003D3 894DC8                      mov kx,ecx
+   558                                  
+   559 000003D6 E877050000                  Call CoordsXAddr
+   560 000003DB B801000000                  mov eax,1
+   561 000003E0 668907                      mov [edi],ax
+   562 000003E3 E873050000                  Call CoordsYAddr
+   563 000003E8 B801000000                  mov eax,1
+   564 000003ED 668907                      mov [edi],ax
+   565                                  
+   566 000003F0 49                          dec ecx
+   567 000003F1 75E0                        jnz CooX
+   568 000003F3 59                          pop ecx
+   569 000003F4 49                          dec ecx
+   570 000003F5 75D2                        jnz CooY
+   571                                      ;-----------
+   572                                  
+   573 000003F7 8B8D68FFFFFF                mov ecx,SqSize
+   574                                  Coo2Y:
+   575 000003FD 51                          push ecx
+   576 000003FE 894DC4                      mov ky,ecx
+   577                                  
+   578 00000401 8B8D68FFFFFF                mov ecx,SqSize
+   579                                  Coo2X:
+   580 00000407 894DC8                      mov kx,ecx
+   581                                      ;--------------
+   582 0000040A 8B45C8                      mov eax,kx
+   583 0000040D 2D80000000                  sub eax,128
+   584 00000412 8945D8                      mov zdx,eax     ;zdx = kx-128 int
+   585 00000415 8B45C4                      mov eax,ky
+   586 00000418 2D80000000                  sub eax,128
+   587 0000041D 8945D4                      mov zdy,eax     ;zdy = ky-128 int
+   588                                  
+   589 00000420 DB45D8                      fild dword zdx
+   590 00000423 DB45D8                      fild dword zdx
+   591 00000426 DEC9                        fmulp st1
+   592 00000428 DB45D4                      fild dword zdy
+   593 0000042B DB45D4                      fild dword zdy
+   594 0000042E DEC9                        fmulp st1
+   595 00000430 DEC1                        faddp st1
+   596 00000432 D9FA                        fsqrt           ; Sqr(zdx^2+zdy^2)
+   597 00000434 DB5D84                      fistp dword Radius
+   598                                  
+   599 00000437 8B8568FFFFFF                mov eax,SqSize
+   600 0000043D 2B4584                      sub eax,Radius
+   601 00000440 8945CC                      mov iys,eax     ; iys = SqSize - Radius
+   602                                      
+   603 00000443 3D01000000                  cmp eax,1
+   604 00000448 0F8C9A000000                jl near NexCooX
+   605 0000044E 3B8568FFFFFF                cmp eax,SqSize
+   606 00000454 0F8F8E000000                jg near NexCooX
+   607                                  
+   608 0000045A DB45D8                      fild dword zdx      ; Want zAngle = -zATan2(zdx,zdy)
+   609 0000045D DB45D4                      fild dword zdy      ; zdy,zdx  ;nb reversed
+   610 00000460 D9F3                        fpatan              ; ATan(st1/st0) = ATan(zdx/zdy)
+   611 00000462 D9E0                        fchs
+   612 00000464 D95D88                      fstp dword zAngle   ; zAngle = -zATan2(zdx,zdy)
+   613                                      
+   614 00000467 8B45D8                      mov eax,zdx
+   615 0000046A 3D00000000                  cmp eax,0
+   616 0000046F 7C0E                        jl noadd2pi
+   617                                      ; else add 2 pi
+   618 00000471 D9EB                        fldpi
+   619 00000473 D9EB                        fldpi
+   620 00000475 DEC1                        faddp st1
+   621 00000477 D94588                      fld dword zAngle
+   622 0000047A DEC1                        faddp st1
+   623 0000047C D95D88                      fstp dword zAngle   ; = zAngle + 2*pi
+   624                                  noadd2pi:
+   625                                      ; get ixs
+   626 0000047F DB45C0                      fild dword n255
+   627 00000482 D9E8                        fld1
+   628 00000484 DEC1                        faddp st1           ; SqSize
+   629 00000486 D94588                      fld dword zAngle
+   630 00000489 DEC9                        fmulp st1           ; SqSize*zAngle
+   631 0000048B D9EB                        fldpi
+   632 0000048D D9EB                        fldpi
+   633 0000048F DEC1                        faddp st1           ; 2*pi,SqSize*zAngle
+   634 00000491 DEF9                        fdivp st1           ; st1/st0 = SqSize*zAngle/2*pi
+   635                                  
+   636 00000493 D9E8                        fld1
+   637 00000495 D9E8                        fld1
+   638 00000497 DEC1                        faddp st1           ; 2
+   639 00000499 DB4580                      fild dword n10      ; 10,2
+   640 0000049C DEF9                        fdivp st1           ; st1/st0 = 2/10 = .2
+   641 0000049E DEC1                        faddp st1           ; (SqSize*zAngle/2*pi)+0.2
+   642 000004A0 DB5DD0                      fistp dword ixs     ; ixs = (SqSize*zAngle/2*pi)+0.2
+   643                                  
+   644 000004A3 8B45D0                      mov eax,ixs
+   645 000004A6 3D01000000                  cmp eax,1
+   646 000004AB 7C3B                        jl NexCooX
+   647 000004AD 3B8568FFFFFF                cmp eax,SqSize
+   648 000004B3 7F33                        jg NexCooX
+   649                                  
+   650 000004B5 E880040000                      Call ColArrayAddr   ; edi->ColArray(kx,ky)
+   651                                  
+   652 000004BA 8B75FC                          mov esi,PtrIndexArray
+   653 000004BD 8B45CC                          mov eax,iys
+   654 000004C0 48                              dec eax
+   655 000004C1 8B9D68FFFFFF                    mov ebx,SqSize
+   656 000004C7 F7E3                            mul ebx
+   657 000004C9 8B5DD0                          mov ebx,ixs
+   658 000004CC 4B                              dec ebx
+   659 000004CD 01D8                            add eax,ebx
+   660 000004CF 01C6                            add esi,eax     ; esi->IndexArray(ixs,iys)
+   661                                      
+   662 000004D1 A4                              movsb           ; ColArray(kx,ky)=IndexArray(ixs,iys) 
+   663                                  
+   664 000004D2 E87B040000                      Call CoordsXAddr
+   665 000004D7 8B45D0                          mov eax,ixs
+   666 000004DA 668907                          mov [edi],ax    ; int
+   667 000004DD E879040000                      Call CoordsYAddr
+   668 000004E2 8B45CC                          mov eax,iys
+   669 000004E5 668907                          mov [edi],ax    ; int
+   670                                  
+   671                                      ;--------------
+   672                                  NexCooX:    
+   673 000004E8 49                          dec ecx
+   674 000004E9 0F8518FFFFFF                jnz near Coo2X
+   675                                      
+   676 000004EF 59                          pop ecx
+   677 000004F0 49                          dec ecx
+   678 000004F1 0F8506FFFFFF                jnz near Coo2Y
+   679                                  
+   680 000004F7 C3                      RET
+   681                                  ;---------------------------------------------------
+   682                                  ScrollDown: ; & TransformLUT
+   683                                  
+   684                                  
+   685                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   686                                      ; Get structure 
+   687 000004F8 8B5D08                      mov ebx,[ebp+8]
+   688                                  
+   689                                      movab PtrIndexArray,    [ebx]
+   690 000004FB FF33                <1>   push dword %2
+   691 000004FD 8F45FC              <1>   pop dword %1
+   692                                      movab PtrColArray,      [ebx+4]
+   693 00000500 FF7304              <1>   push dword %2
+   694 00000503 8F45F8              <1>   pop dword %1
+   695                                      movab PtrLineStore,     [ebx+8]
+   696 00000506 FF7308              <1>   push dword %2
+   697 00000509 8F45F4              <1>   pop dword %1
+   698                                      movab PtrCoordsX,       [ebx+12]
+   699 0000050C FF730C              <1>   push dword %2
+   700 0000050F 8F45F0              <1>   pop dword %1
+   701                                      movab PtrCoordsY,       [ebx+16]
+   702 00000512 FF7310              <1>   push dword %2
+   703 00000515 8F45EC              <1>   pop dword %1
+   704                                      ;movab RandSeed,         [ebx+20]
+   705                                      ;movab Noise,            [ebx+24]    ; PlasmaGraininess
+   706                                      ;movab Stepsize,         [ebx+28]    ; PlasmaScale
+   707                                      movab Twirl,            [ebx+32]
+   708 00000518 FF7320              <1>   push dword %2
+   709 0000051B 8F8574FFFFFF        <1>   pop dword %1
+   710                                      movab TwirlCount,       [ebx+36]
+   711 00000521 FF7324              <1>   push dword %2
+   712 00000524 8F8570FFFFFF        <1>   pop dword %1
+   713                                  
+   714                                  
+   715                                      ; Save bottom line
+   716 0000052A 8B7DF4                      mov edi,PtrLineStore    ; edi -> LineStore(1)
+   717 0000052D 8B75FC                      mov esi,PtrIndexArray   ; esi -> IndexArray(1,1)
+   718 00000530 BB08000000                  mov ebx,8               ; esi,edi step
+   719                                  
+   720 00000535 B904000000                  mov ecx,4               ; 64*4=SqSize
+   721                                  SaveBLine:
+   722 0000053A 0F6F06                      movq mm0,[esi]
+   723 0000053D 01DE                        add esi,ebx
+   724 0000053F 0F6F0E                      movq mm1,[esi]
+   725 00000542 01DE                        add esi,ebx
+   726 00000544 0F6F16                      movq mm2,[esi]
+   727 00000547 01DE                        add esi,ebx
+   728 00000549 0F6F1E                      movq mm3,[esi]
+   729 0000054C 01DE                        add esi,ebx
+   730 0000054E 0F6F26                      movq mm4,[esi]
+   731 00000551 01DE                        add esi,ebx
+   732 00000553 0F6F2E                      movq mm5,[esi]
+   733 00000556 01DE                        add esi,ebx
+   734 00000558 0F6F36                      movq mm6,[esi]
+   735 0000055B 01DE                        add esi,ebx
+   736 0000055D 0F6F3E                      movq mm7,[esi]
+   737 00000560 01DE                        add esi,ebx
+   738                                  
+   739 00000562 0F7F07                      movq [edi],mm0
+   740 00000565 01DF                        add edi,ebx
+   741 00000567 0F7F0F                      movq [edi],mm1
+   742 0000056A 01DF                        add edi,ebx
+   743 0000056C 0F7F17                      movq [edi],mm2
+   744 0000056F 01DF                        add edi,ebx
+   745 00000571 0F7F1F                      movq [edi],mm3
+   746 00000574 01DF                        add edi,ebx
+   747 00000576 0F7F27                      movq [edi],mm4
+   748 00000579 01DF                        add edi,ebx
+   749 0000057B 0F7F2F                      movq [edi],mm5
+   750 0000057E 01DF                        add edi,ebx
+   751 00000580 0F7F37                      movq [edi],mm6
+   752 00000583 01DF                        add edi,ebx
+   753 00000585 0F7F3F                      movq [edi],mm7
+   754 00000588 01DF                        add edi,ebx
+   755                                  
+   756 0000058A 49                          dec ecx
+   757 0000058B 75AD                        jnz SaveBLine
+   758                                  
+   759                                  
+   760                                      ; Move lines 2-SqSize to 1-255
+   761 0000058D 8B75FC                      mov esi,PtrIndexArray   ; esi -> IndexArray(1,1)
+   762 00000590 8B8568FFFFFF                mov eax,SqSize
+   763 00000596 01C6                        add esi,eax             ; esi -> IndexArray(1,2)
+   764 00000598 8B7DFC                      mov edi,PtrIndexArray   ; edi -> IndexArray(1,1)
+   765                                  
+   766 0000059B BB08000000                  mov ebx,8
+   767 000005A0 B9FC030000                  mov ecx,1020            ; 255*SqSize/64
+   768                                  ScrD:
+   769 000005A5 0F6F06                      movq mm0,[esi]
+   770 000005A8 01DE                        add esi,ebx
+   771 000005AA 0F6F0E                      movq mm1,[esi]
+   772 000005AD 01DE                        add esi,ebx
+   773 000005AF 0F6F16                      movq mm2,[esi]
+   774 000005B2 01DE                        add esi,ebx
+   775 000005B4 0F6F1E                      movq mm3,[esi]
+   776 000005B7 01DE                        add esi,ebx
+   777 000005B9 0F6F26                      movq mm4,[esi]
+   778 000005BC 01DE                        add esi,ebx
+   779 000005BE 0F6F2E                      movq mm5,[esi]
+   780 000005C1 01DE                        add esi,ebx
+   781 000005C3 0F6F36                      movq mm6,[esi]
+   782 000005C6 01DE                        add esi,ebx
+   783 000005C8 0F6F3E                      movq mm7,[esi]
+   784 000005CB 01DE                        add esi,ebx
+   785                                  
+   786                                  
+   787 000005CD 0F7F07                      movq [edi],mm0
+   788 000005D0 01DF                        add edi,ebx
+   789 000005D2 0F7F0F                      movq [edi],mm1
+   790 000005D5 01DF                        add edi,ebx
+   791 000005D7 0F7F17                      movq [edi],mm2
+   792 000005DA 01DF                        add edi,ebx
+   793 000005DC 0F7F1F                      movq [edi],mm3
+   794 000005DF 01DF                        add edi,ebx
+   795 000005E1 0F7F27                      movq [edi],mm4
+   796 000005E4 01DF                        add edi,ebx
+   797 000005E6 0F7F2F                      movq [edi],mm5
+   798 000005E9 01DF                        add edi,ebx
+   799 000005EB 0F7F37                      movq [edi],mm6
+   800 000005EE 01DF                        add edi,ebx
+   801 000005F0 0F7F3F                      movq [edi],mm7
+   802 000005F3 01DF                        add edi,ebx
+   803                                      
+   804 000005F5 49                          dec ecx
+   805 000005F6 75AD                        jnz ScrD
+   806                                  
+   807                                  
+   808                                      ; Put back top line from LineStore
+   809 000005F8 8B75F4                      mov esi,PtrLineStore    ; esi -> LineStore(1)
+   810 000005FB 8B7DFC                      mov edi,PtrIndexArray   ; edi -> IndexArray(1,1)
+   811 000005FE 8B8568FFFFFF                mov eax,SqSize
+   812 00000604 48                          dec eax
+   813 00000605 8B9D68FFFFFF                mov ebx,SqSize
+   814 0000060B F7E3                        mul ebx
+   815 0000060D BB01000000                  mov ebx,1
+   816 00000612 4B                          dec ebx
+   817 00000613 01D8                        add eax,ebx
+   818 00000615 01C7                        add edi,eax     ; edi -> IndexArray(1,SqSize)
+   819                                  
+   820 00000617 BB08000000                  mov ebx,8               ; esi,edi step
+   821 0000061C B904000000                  mov ecx,4               ; 64*4=SqSize
+   822                                  PutTLine:
+   823 00000621 0F6F06                      movq mm0,[esi]
+   824 00000624 01DE                        add esi,ebx
+   825 00000626 0F6F0E                      movq mm1,[esi]
+   826 00000629 01DE                        add esi,ebx
+   827 0000062B 0F6F16                      movq mm2,[esi]
+   828 0000062E 01DE                        add esi,ebx
+   829 00000630 0F6F1E                      movq mm3,[esi]
+   830 00000633 01DE                        add esi,ebx
+   831 00000635 0F6F26                      movq mm4,[esi]
+   832 00000638 01DE                        add esi,ebx
+   833 0000063A 0F6F2E                      movq mm5,[esi]
+   834 0000063D 01DE                        add esi,ebx
+   835 0000063F 0F6F36                      movq mm6,[esi]
+   836 00000642 01DE                        add esi,ebx
+   837 00000644 0F6F3E                      movq mm7,[esi]
+   838 00000647 01DE                        add esi,ebx
+   839                                  
+   840 00000649 0F7F07                      movq [edi],mm0
+   841 0000064C 01DF                        add edi,ebx
+   842 0000064E 0F7F0F                      movq [edi],mm1
+   843 00000651 01DF                        add edi,ebx
+   844 00000653 0F7F17                      movq [edi],mm2
+   845 00000656 01DF                        add edi,ebx
+   846 00000658 0F7F1F                      movq [edi],mm3
+   847 0000065B 01DF                        add edi,ebx
+   848 0000065D 0F7F27                      movq [edi],mm4
+   849 00000660 01DF                        add edi,ebx
+   850 00000662 0F7F2F                      movq [edi],mm5
+   851 00000665 01DF                        add edi,ebx
+   852 00000667 0F7F37                      movq [edi],mm6
+   853 0000066A 01DF                        add edi,ebx
+   854 0000066C 0F7F3F                      movq [edi],mm7
+   855 0000066F 01DF                        add edi,ebx
+   856                                  
+   857 00000671 49                          dec ecx
+   858 00000672 75AD                        jnz PutTLine
+   859                                  
+   860 00000674 0F77                        emms            ;Clear FP/MMX stack
+   861                                  
+   862 00000676 C3                      RET  
+   863                                  ;---------------------------------------------------
+   864                                  TransformLUT:
+   865                                  
+   866 00000677 8B8D68FFFFFF                mov ecx,SqSize
+   867                                  
+   868 0000067D 8B7DF8                      mov edi,PtrColArray     ;[3]
+   869 00000680 8B8568FFFFFF                mov eax,SqSize
+   870 00000686 48                          dec eax
+   871 00000687 8B9D68FFFFFF                mov ebx,SqSize
+   872 0000068D F7E3                        mul ebx
+   873 0000068F 89CB                        mov ebx,ecx;kx
+   874 00000691 4B                          dec ebx
+   875 00000692 01D8                        add eax,ebx
+   876 00000694 01C7                        add edi,eax
+   877 00000696 57                          push edi        ; [esp+12]
+   878                                      
+   879 00000697 8B7DEC                      mov edi,PtrCoordsY      ;[2]
+   880 0000069A 8B8568FFFFFF                mov eax,SqSize
+   881 000006A0 48                          dec eax
+   882 000006A1 8B9D68FFFFFF                mov ebx,SqSize
+   883 000006A7 F7E3                        mul ebx
+   884 000006A9 89CB                        mov ebx,ecx;kx
+   885 000006AB 4B                          dec ebx
+   886 000006AC 01D8                        add eax,ebx
+   887 000006AE D1E0                        shl eax,1       ; *2
+   888 000006B0 01C7                        add edi,eax
+   889 000006B2 57                          push edi        ; [esp+8]
+   890                                  
+   891 000006B3 8B7DF0                      mov edi,PtrCoordsX      ;[1]
+   892 000006B6 8B8568FFFFFF                mov eax,SqSize
+   893 000006BC 48                          dec eax
+   894 000006BD 8B9D68FFFFFF                mov ebx,SqSize
+   895 000006C3 F7E3                        mul ebx
+   896 000006C5 89CB                        mov ebx,ecx;kx
+   897 000006C7 4B                          dec ebx
+   898 000006C8 01D8                        add eax,ebx
+   899 000006CA D1E0                        shl eax,1       ; *2
+   900 000006CC 01C7                        add edi,eax
+   901 000006CE 57                          push edi        ; [esp+4]
+   902                                  
+   903                                  LUTY:
+   904 000006CF 51                          push ecx
+   905 000006D0 894DC4                      mov ky,ecx
+   906                                      
+   907 000006D3 8B8D68FFFFFF                mov ecx,SqSize
+   908                                  
+   909                                  LUTX:
+   910                                      ;--------------
+   911 000006D9 8B7C2404                    mov edi,[esp+4]
+   912 000006DD 31C0                            xor eax,eax
+   913 000006DF 668B07                          mov ax,[edi]
+   914 000006E2 8945D0                          mov ixs,eax         ; ixs=CoordsX(kx,ky)
+   915 000006E5 4F                          dec edi
+   916 000006E6 4F                          dec edi
+   917 000006E7 897C2404                    mov [esp+4],edi
+   918                                  
+   919 000006EB 8B7C2408                    mov edi,[esp+8]
+   920 000006EF 31C0                            xor eax,eax
+   921 000006F1 668B07                          mov ax,[edi]
+   922 000006F4 8945CC                          mov iys,eax         ; iys=CoordsY(kx,ky)
+   923 000006F7 4F                          dec edi
+   924 000006F8 4F                          dec edi
+   925 000006F9 897C2408                    mov [esp+8],edi
+   926                                  
+   927 000006FD 8B75FC                          mov esi,PtrIndexArray
+   928 00000700 8B45CC                          mov eax,iys
+   929 00000703 48                              dec eax
+   930 00000704 8B9D68FFFFFF                    mov ebx,SqSize
+   931 0000070A F7E3                            mul ebx
+   932 0000070C 8B5DD0                          mov ebx,ixs
+   933 0000070F 4B                              dec ebx
+   934 00000710 01D8                            add eax,ebx
+   935 00000712 01C6                            add esi,eax     ; esi->IndexArray(ixs,iys)
+   936                                          
+   937 00000714 8B7C240C                    mov edi,[esp+12]
+   938 00000718 8A06                            mov AL,[esi]    ; ColArray(kx,ky)=IndexArray(ixs,iys)
+   939 0000071A 8807                            mov [edi],AL
+   940 0000071C 4F                          dec edi
+   941 0000071D 897C240C                    mov [esp+12],edi
+   942                                  
+   943                                      ;--------------
+   944                                  NexLUTX:
+   945                                      
+   946 00000721 49                          dec ecx
+   947 00000722 0F85B1FFFFFF                jnz near LUTX
+   948                                  
+   949 00000728 59                          pop ecx
+   950 00000729 49                          dec ecx
+   951 0000072A 0F859FFFFFFF                jnz near LUTY
+   952                                  
+   953 00000730 5F                          pop edi
+   954 00000731 5F                          pop edi
+   955 00000732 5F                          pop edi
+   956                                  
+   957                                  ;Twirl
+   958 00000733 8B8574FFFFFF                mov eax,Twirl
+   959 00000739 3D00000000                  cmp eax,0
+   960 0000073E 744F                        je TwirlDone
+   961                                      
+   962 00000740 8B8570FFFFFF                mov eax,TwirlCount
+   963 00000746 3DF4010000                  cmp eax,500
+   964 0000074B 7F42                        jg TwirlDone
+   965                                      
+   966 0000074D 8B8D68FFFFFF                mov ecx,SqSize
+   967                                  TWY:
+   968 00000753 51                          push ecx
+   969 00000754 894DC4                      mov ky,ecx
+   970                                      
+   971 00000757 8B8D68FFFFFF                mov ecx,SqSize
+   972                                  TWX:
+   973 0000075D 894DC8                      mov kx,ecx
+   974                                      
+   975 00000760 E8CC010000                  Call IndexArrayAddr     ; edi-> IndexArray(kx,ky)
+   976 00000765 57                          push edi
+   977 00000766 5E                          pop esi                 ; esi-> IndexArray(kx,ky)
+   978                                      
+   979 00000767 8B45C8                      mov eax,kx              ; Swap kx,ky
+   980                                      
+   981 0000076A FF75C4                      push dword ky
+   982 0000076D 8F45C8                      pop dword kx
+   983 00000770 8945C4                      mov ky,eax
+   984                                  
+   985                                      ;mov ebx,ky
+   986                                      ;mov ky,eax
+   987                                      ;mov kx,ebx
+   988                                      
+   989 00000773 E8B9010000                  Call IndexArrayAddr     ; edi-> IndexArray(ky,kx)
+   990 00000778 8A06                        mov AL,[esi]
+   991 0000077A 8807                        mov [edi],AL
+   992                                  
+   993 0000077C 8B45C8                      mov eax,kx              ; Swap back kx,ky
+   994                                  
+   995 0000077F FF75C4                      push dword ky
+   996 00000782 8F45C8                      pop dword kx
+   997 00000785 8945C4                      mov ky,eax
+   998                                  
+   999                                      ;mov ebx,ky
+  1000                                      ;mov ky,eax
+  1001                                      ;mov kx,ebx
+  1002                                  
+  1003 00000788 49                          dec ecx
+  1004 00000789 75D2                        jnz TWX
+  1005 0000078B 59                          pop ecx
+  1006 0000078C 49                          dec ecx
+  1007 0000078D 75C4                        jnz TWY
+  1008                                      
+  1009                                  TwirlDone:
+  1010                                  
+  1011 0000078F C3                      RET
+  1012                                  ;---------------------------------------------------
+  1013                                  
+  1014                                  ;================================================
+  1015                                  DoSmoothing:    ; 8-point smoothing
+  1016                                  
+  1017                                  ;%define Mask4       [ebp-132]
+  1018                                  ;%define SUMMER      [ebp-136]
+  1019                                  
+  1020 00000790 B8F8F8F8F8                  mov eax,0F8F8F8F8h
+  1021 00000795 89857CFFFFFF                mov Mask4,eax
+  1022                                      
+  1023 0000079B 8B8D68FFFFFF                mov ecx,SqSize;sizey
+  1024                                  
+  1025                                  ForY8:
+  1026 000007A1 894D8C                      mov iy,ecx
+  1027 000007A4 894DC4                      mov ky,ecx
+  1028 000007A7 51                          push ecx
+  1029                                  
+  1030 000007A8 8B8D68FFFFFF                mov ecx,SqSize;sizex
+  1031                                  ForX8:
+  1032 000007AE 894D90                      mov ix,ecx
+  1033 000007B1 894DC8                      mov kx,ecx
+  1034                                      
+  1035 000007B4 E878010000                  Call IndexArrayAddr  ; edi->center x,y
+  1036 000007B9 57                          push edi
+  1037 000007BA 5E                          pop esi             ; esi->center x,y
+  1038                                      
+  1039 000007BB 8B4590                      mov eax,ix
+  1040 000007BE 48                          dec eax             ; ix-1
+  1041 000007BF 3D00000000                  cmp eax,0
+  1042 000007C4 7F06                        jg Left_ixm1
+  1043 000007C6 8B8568FFFFFF                mov eax,SqSize;sizex
+  1044                                  Left_ixm1:
+  1045 000007CC 8945C8                      mov kx,eax          ; kx set at ix-1
+  1046                                      
+  1047 000007CF 8B458C                      mov eax,iy
+  1048 000007D2 8945C4                      mov ky,eax          ; ix-1,iy
+  1049 000007D5 E857010000                  Call IndexArrayAddr
+  1050 000007DA 31C0                        xor eax,eax
+  1051 000007DC 8A07                        mov AL,[edi]
+  1052                                      ;and eax,Mask4
+  1053 000007DE C1E803                      shr eax,3
+  1054 000007E1 898578FFFFFF                mov SUMMER,eax
+  1055                                      
+  1056 000007E7 8B458C                      mov eax,iy
+  1057 000007EA 48                          dec eax             ; iy-1
+  1058 000007EB 3D00000000                  cmp eax,0
+  1059 000007F0 7F06                        jg Left_iym1
+  1060 000007F2 8B8568FFFFFF                mov eax,SqSize;sizey
+  1061                                  Left_iym1:
+  1062 000007F8 8945C4                      mov ky,eax
+  1063 000007FB E831010000                  Call IndexArrayAddr
+  1064 00000800 31C0                        xor eax,eax
+  1065 00000802 8A07                        mov AL,[edi]
+  1066                                      ;and eax,Mask4
+  1067 00000804 C1E803                      shr eax,3
+  1068 00000807 018578FFFFFF                add SUMMER,eax
+  1069                                      
+  1070 0000080D 8B458C                      mov eax,iy
+  1071 00000810 40                          inc eax             ; iy+1
+  1072 00000811 3B8568FFFFFF                cmp eax,SqSize;sizey
+  1073 00000817 7E05                        jle Left_iyp1
+  1074 00000819 B801000000                  mov eax,1
+  1075                                  Left_iyp1:
+  1076 0000081E 8945C4                      mov ky,eax
+  1077 00000821 E80B010000                  Call IndexArrayAddr
+  1078 00000826 31C0                        xor eax,eax
+  1079 00000828 8A07                        mov AL,[edi]
+  1080                                      ;and eax,Mask4
+  1081 0000082A C1E803                      shr eax,3
+  1082 0000082D 018578FFFFFF                add SUMMER,eax
+  1083                                      ;.. left col done ..............
+  1084                                  
+  1085 00000833 8B4590                      mov eax,ix
+  1086 00000836 8945C8                      mov kx,eax          ; kx reset
+  1087                                  
+  1088 00000839 8B458C                      mov eax,iy
+  1089 0000083C 48                          dec eax             ; iy-1
+  1090 0000083D 3D00000000                  cmp eax,0
+  1091 00000842 7F06                        jg Cen_iym1
+  1092 00000844 8B8568FFFFFF                mov eax,SqSize;sizey
+  1093                                  Cen_iym1:
+  1094 0000084A 8945C4                      mov ky,eax
+  1095 0000084D E8DF000000                  Call IndexArrayAddr
+  1096 00000852 31C0                        xor eax,eax
+  1097 00000854 8A07                        mov AL,[edi]
+  1098                                      ;and eax,Mask4
+  1099 00000856 C1E803                      shr eax,3
+  1100 00000859 018578FFFFFF                add SUMMER,eax
+  1101                                      
+  1102 0000085F 8B458C                      mov eax,iy
+  1103 00000862 40                          inc eax             ; iy+1
+  1104 00000863 3B8568FFFFFF                cmp eax,SqSize;sizey
+  1105 00000869 7E05                        jle Cen_iyp1
+  1106 0000086B B801000000                  mov eax,1
+  1107                                  Cen_iyp1:
+  1108 00000870 8945C4                      mov ky,eax
+  1109 00000873 E8B9000000                  Call IndexArrayAddr
+  1110 00000878 31C0                        xor eax,eax
+  1111 0000087A 8A07                        mov AL,[edi]
+  1112                                      ;and eax,Mask4
+  1113 0000087C C1E803                      shr eax,3
+  1114 0000087F 018578FFFFFF                add SUMMER,eax
+  1115                                      ;.. center col done
+  1116                                  
+  1117 00000885 8B4590                      mov eax,ix
+  1118 00000888 40                          inc eax             ; ix+1
+  1119 00000889 3B8568FFFFFF                cmp eax,SqSize;sizex
+  1120 0000088F 7E05                        jle Right_ixm1
+  1121 00000891 B801000000                  mov eax,1
+  1122                                  Right_ixm1:
+  1123 00000896 8945C8                      mov kx,eax          ; kx set at ix+1
+  1124                                      
+  1125 00000899 8B458C                      mov eax,iy
+  1126 0000089C 8945C4                      mov ky,eax          ; ix+1,iy
+  1127 0000089F E88D000000                  Call IndexArrayAddr
+  1128 000008A4 31C0                        xor eax,eax
+  1129 000008A6 8A07                        mov AL,[edi]
+  1130                                      ;and eax,Mask4
+  1131 000008A8 C1E803                      shr eax,3
+  1132 000008AB 018578FFFFFF                add SUMMER,eax
+  1133                                      
+  1134 000008B1 8B458C                      mov eax,iy
+  1135 000008B4 48                          dec eax             ; iy-1
+  1136 000008B5 3D00000000                  cmp eax,0
+  1137 000008BA 7F06                        jg Right_iym1
+  1138 000008BC 8B8568FFFFFF                mov eax,SqSize;sizey
+  1139                                  Right_iym1:
+  1140 000008C2 8945C4                      mov ky,eax
+  1141 000008C5 E867000000                  Call IndexArrayAddr
+  1142 000008CA 31C0                        xor eax,eax
+  1143 000008CC 8A07                        mov AL,[edi]
+  1144                                      ;and eax,Mask4
+  1145 000008CE C1E803                      shr eax,3
+  1146 000008D1 018578FFFFFF                add SUMMER,eax
+  1147                                      
+  1148 000008D7 8B458C                      mov eax,iy
+  1149 000008DA 40                          inc eax             ; iy+1
+  1150 000008DB 3B8568FFFFFF                cmp eax,SqSize;sizey
+  1151 000008E1 7E05                        jle Right_iyp1
+  1152 000008E3 B801000000                  mov eax,1
+  1153                                  Right_iyp1:
+  1154 000008E8 8945C4                      mov ky,eax
+  1155 000008EB E841000000                  Call IndexArrayAddr
+  1156 000008F0 31C0                        xor eax,eax
+  1157 000008F2 8A07                        mov AL,[edi]
+  1158                                      ;and eax,Mask4
+  1159 000008F4 C1E803                      shr eax,3           ; /8
+  1160 000008F7 018578FFFFFF                add SUMMER,eax
+  1161                                      ;.. Right col done ..............
+  1162                                  
+  1163                                      ; Set color at IndexArray(ix,iy)
+  1164                                  
+  1165 000008FD 8B8578FFFFFF                mov eax,SUMMER
+  1166 00000903 8806                        mov [esi],AL
+  1167                                      
+  1168                                  ;-----
+  1169                                  NexX8;
+  1170 00000905 49                          dec ecx
+  1171 00000906 0F85A2FEFFFF                jnz near ForX8
+  1172                                  NexY8:
+  1173 0000090C 59                          pop ecx
+  1174 0000090D 49                          dec ecx
+  1175 0000090E 0F858DFEFFFF                jnz near ForY8
+  1176                                  
+  1177 00000914 C3                      RET
+  1178                                  ;================================================
+  1179                                  
+  1180                                  
+  1181                                  Random:      ; Out: aL & RandSeed = rand(0-255)
+  1182 00000915 B813180100                  mov eax,011813h     ; 71699 prime 
+  1183 0000091A F76DE8                      imul DWORD RandSeed
+  1184 0000091D 0509B20A00                  add eax, 0AB209h    ; 700937 prime
+  1185 00000922 D1D8                        rcr eax,1           ; leaving out gives vertical lines plus
+  1186                                                          ; faint horizontal ones, tartan
+  1187                                  
+  1188                                      ;----------------------------------------
+  1189 00000924 7202                        jc ok              ; these 2 have little effect
+  1190 00000926 D1C0                        rol eax,1          ;
+  1191                                  ok:                     ;
+  1192                                      ;----------------------------------------
+  1193                                      
+  1194                                      ;----------------------------------------
+  1195                                      ;dec eax            ; these produce vert lines
+  1196                                      ;inc eax            ; & with fsin marble arches
+  1197                                      ;----------------------------------------
+  1198                                  
+  1199 00000928 8945E8                      mov RandSeed,eax    ; save seed
+  1200 0000092B 25FF000000                  and eax,255
+  1201                                  
+  1202 00000930 C3                      RET
+  1203                                  ;=================================================
+  1204                                  ;===========================
+  1205                                  IndexArrayAddr:  ; In: NB BYTE ARRAY, kx,ky,256x256  Out: edi->addr
+  1206                                      ;B = edi + (ky-1) * SqSize + (kx-1)
+  1207                                      
+  1208 00000931 8B7DFC                      mov edi,PtrIndexArray
+  1209                                  
+  1210 00000934 E904000000                  jmp CommonByteAddr
+  1211                                  
+  1212                                      ;mov eax,ky
+  1213                                      ;dec eax
+  1214                                      ;mov ebx,SqSize
+  1215                                      ;mul ebx
+  1216                                      ;mov ebx,kx
+  1217                                      ;dec ebx
+  1218                                      ;add eax,ebx
+  1219                                      ;add edi,eax
+  1220 00000939 C3                      RET
+  1221                                  ;===========================
+  1222                                  ColArrayAddr:  ; In: NB BYTE ARRAY, kx,ky,256x256  Out: edi->addr
+  1223                                      ;B = edi + (ky-1) * SqSize + (kx-1)
+  1224                                      
+  1225 0000093A 8B7DF8                      mov edi,PtrColArray
+  1226                                  
+  1227                                  CommonByteAddr:
+  1228                                  
+  1229 0000093D 8B45C4                      mov eax,ky
+  1230 00000940 48                          dec eax
+  1231 00000941 8B9D68FFFFFF                mov ebx,SqSize
+  1232 00000947 F7E3                        mul ebx
+  1233 00000949 8B5DC8                      mov ebx,kx
+  1234 0000094C 4B                          dec ebx
+  1235 0000094D 01D8                        add eax,ebx
+  1236 0000094F 01C7                        add edi,eax
+  1237 00000951 C3                      RET
+  1238                                  ;===========================
+  1239                                  CoordsXAddr:  ; Addr = edi + 2*[(ky-1) * SqSize + (kx-1)]
+  1240                                  ;PtrCoordsX  Integer Array
+  1241                                  
+  1242 00000952 8B7DF0                      mov edi,PtrCoordsX
+  1243 00000955 E904000000                  jmp CommonXY
+  1244                                  
+  1245 0000095A C3                      RET
+  1246                                  ;===========================
+  1247                                  CoordsYAddr:  ; Addr = edi + 2*[(ky-1) * SqSize + (kx-1)]
+  1248                                  ;PtrCoordsY  Integer Array
+  1249                                  
+  1250 0000095B 8B7DEC                      mov edi,PtrCoordsY
+  1251                                  CommonXY:
+  1252                                  
+  1253 0000095E 8B45C4                      mov eax,ky
+  1254 00000961 48                          dec eax
+  1255 00000962 8B9D68FFFFFF                mov ebx,SqSize
+  1256 00000968 F7E3                        mul ebx
+  1257 0000096A 8B5DC8                      mov ebx,kx
+  1258 0000096D 4B                          dec ebx
+  1259 0000096E 01D8                        add eax,ebx
+  1260 00000970 D1E0                        shl eax,1       ; *2
+  1261 00000972 01C7                        add edi,eax
+  1262 00000974 C3                      RET
+  1263                                  ;===========================
